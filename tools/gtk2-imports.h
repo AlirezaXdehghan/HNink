@@ -316,3 +316,12 @@ int g_strcmp0(const char *, const char *);
 void gtk_layout_get_size(void *, guint *, guint *);
 
 const char *gtk_label_get_label(void *);
+
+typedef void cairo_surface_t;
+#define CAIRO_STATUS_SUCCESS 0
+cairo_surface_t *cairo_image_surface_create_from_png(const char *);
+int cairo_surface_status(cairo_surface_t *);
+int cairo_image_surface_get_width(cairo_surface_t *);
+void cairo_surface_destroy(cairo_surface_t *);
+void cairo_mask_surface(cairo_t *, cairo_surface_t *, double, double);
+char *g_path_get_dirname(const char *);

@@ -1,12 +1,18 @@
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
-#ifdef HNREADER_ARM_IMPORTS
+#ifdef HNINK_ARM_IMPORTS
 #include "gtk2-imports.h"
 #else
 #include <gtk/gtk.h>
 #endif
 #include "icons.h"
+
+/* Meson and the release build pass the version; "dev" marks a build made any other way. */
+#ifndef HNINK_VERSION
+#define HNINK_VERSION "dev"
+#endif
+#define PROJECT_URL "https://github.com/AlirezaXdehghan/HNink"
 
 typedef enum { FEED, COMMENTS, ARTICLE, OPTIONS } Screen;
 enum { BOLD_LEVELS = 5 };
@@ -15,7 +21,7 @@ typedef struct {
     int size[3];
 } Typography;
 enum { RETURN_TO_KINDLE_HOME = 10 };
-typedef enum { SYNC, HYDRATE, LOAD_ARTICLE } Operation;
+typedef enum { SYNC, HYDRATE, LOAD_ARTICLE, LOAD_ABOUT } Operation;
 
 typedef struct {
     Operation operation;
@@ -34,22 +40,25 @@ typedef struct {
 typedef struct {
     const char *backend, *cache;
     GtkWidget *window, *header, *feed_picker, *status, *body, *content;
-    GtkWidget *left, *refresh, *options, *heading, *discussion_globe, *discussion_book;
+    GtkWidget *left, *refresh, *options, *heading, *discussion_book;
     GtkWidget *discussion_save, *scroll_up, *footer, *previous, *next, *page_label;
-    GtkWidget *heading_divider, *rail_divider, *status_rail;
+    GtkWidget *heading_divider, *rail_divider, *status_rail, *update_button;
     GtkAdjustment *reading_position;
     GtkWidget *username_entry, *password_entry, *login_button, *keyboard, *keyboard_keys, *keyboard_entry;
     int keyboard_mode, account_story;
     guint account_watch;
     char *username;
-    gboolean discussion_favorite;
     Screen screen;
     int revision, feed, page, pages, first_id, story, depth;
     int scroll_divisor;
+    gboolean check_on_open;
+    GtkWidget *distance_choice[4], *button_choice[2], *check_choice[2];
+    char *discussion_pending, *update_text;
+    gboolean update_shown, reading_about;
+    cairo_surface_t *project_mark;
     Typography typography;
     unsigned int font_families;
-    Screen preview_area;
-    GtkWidget *typography_preview, *type_level[4], *type_down[4], *type_up[4];
+    GtkWidget *typography_preview[3], *type_level[4], *type_down[4], *type_up[4];
     int comment_id[32], comment_anchor[32];
     guint discussion_watch, page_buttons_watch;
     gboolean reverse_page_buttons;
@@ -83,12 +92,13 @@ typedef struct {
 
 static const char *feed_keys[] = {"top", "new", "best", "ask", "show", "jobs", "saved"};
 static const char *feed_names[] = {"Top", "New", "Best", "Ask HN", "Show HN", "Jobs", "Saved"};
-static const int text_scales[] = {74, 82, 91, 100, 112, 125, 140, 155, 175, 195};
+static const int text_scales[] = {74, 82, 91, 100, 112, 125, 140, 155, 175, 195, 215, 240};
 static const char *font_families[] = {"System", "Serif", "Sans Serif", "Monospace", "Bookerly", "Amazon Ember", "Caecilia"};
 static const char *size_labels[] = {"Feed size", "Comments size", "Article size"};
 enum { FONT_COUNT = sizeof(font_families) / sizeof(font_families[0]), SYSTEM_SIZE = 3 };
 static const char *scroll_distances[] = {"1 page", "1/2", "1/3", "1/4"};
-static const char loading_comment[] = "Loading the comment…";
+static const char loading_comments[] = "Loading comments…";
+static const char loading_comment[] = "…";
 enum { TEXT_SIZE_COUNT = sizeof(text_scales) / sizeof(text_scales[0]), FEED_MAX_STORIES = 60, LIST_INSET = 4 };
 enum { SCROLL_DISTANCE_COUNT = sizeof(scroll_distances) / sizeof(scroll_distances[0]) };
 enum { INLINE_COMMENT_DEPTH = 3 };
@@ -128,10 +138,30 @@ static int number(const char *text) {
 static void say(App *app, const char *notice) {
     g_free(app->notice);
     app->notice = g_strdup(notice);
-    const char *visible = notice && *notice ? notice : app->screen == FEED ? app->updated : 0;
+    const char *visible = notice && *notice ? notice : app->screen == FEED ? app->updated :
+        app->update_shown ? app->update_text : 0;
     gtk_label_set_text(GTK_LABEL(app->status), visible ? visible : "");
-    if (app->screen == FEED || (visible && *visible)) gtk_widget_show(app->status_rail);
+    if (app->screen == FEED || app->update_shown || (visible && *visible)) gtk_widget_show(app->status_rail);
     else gtk_widget_hide(app->status_rail);
+}
+
+/* A newer discussion arrived while a complete one was on screen. Offer it instead of repainting. */
+static void drop_discussion_update(App *app) {
+    g_free(app->discussion_pending);
+    g_free(app->update_text);
+    app->discussion_pending = app->update_text = 0;
+    app->update_shown = FALSE;
+    if (app->update_button) gtk_widget_hide(app->update_button);
+}
+
+static int read_setting(App *app, const char *name, int fallback) {
+    char *path = g_build_filename(app->cache, name, (void *)0);
+    char *setting = 0;
+    int value = fallback;
+    if (g_file_get_contents(path, &setting, 0, 0)) value = number(setting);
+    g_free(setting);
+    g_free(path);
+    return value;
 }
 
 static char *local_command(App *app, const char *command, const char *arg, int page, int size, int anchor) {
@@ -166,6 +196,7 @@ static void select_screen(App *app, Screen screen) {
     app->screen = screen;
     app->revision++;
     reset_output(app);
+    drop_discussion_update(app);
     say(app, "");
     render(app, anchor);
 }
@@ -211,8 +242,7 @@ static PangoFontDescription *content_font(App *app, int scale, gboolean emphasiz
 }
 
 static int reader_scale(App *app, Screen area) {
-    int scale = text_scales[app->typography.size[area]];
-    return area == COMMENTS ? scale * 120 / 100 : scale;
+    return text_scales[app->typography.size[area]];
 }
 
 static void reader_font(App *app, GtkWidget *widget, int scale, gboolean emphasized) {
@@ -228,6 +258,15 @@ static void measure_text(App *app, const PangoFontDescription *font, const char 
     pango_layout_set_markup(layout, markup, -1);
     pango_layout_get_pixel_size(layout, width, height);
     g_object_unref(layout);
+}
+
+/* Pixel height of one line of reading text, for page-turn overlap. */
+static int reader_line(App *app, Screen area) {
+    PangoFontDescription *font = content_font(app, reader_scale(app, area), FALSE);
+    int height = 0;
+    measure_text(app, font, "HgjÅ", 0, &height);
+    pango_font_description_free(font);
+    return height;
 }
 
 static void measure_feed_text(App *app) {
@@ -280,29 +319,16 @@ static gboolean expose_control(GtkWidget *widget, GdkEventExpose *event, gpointe
 }
 #endif
 
-static void cancel_release(GtkWidget *widget, gpointer data) {
+/* The press paints at once. The release only queues a redraw, so it lands in the same
+   e-ink update as whatever the tap changed instead of a separate refresh. */
+static void control_released(GtkWidget *widget, gpointer data) {
     (void)data;
-    guint timer = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(widget), "hn-release"));
-    if (timer) g_source_remove(timer);
-    g_object_set_data(G_OBJECT(widget), "hn-release", 0);
-}
-
-static gboolean release_control(gpointer data) {
-    GtkWidget *widget = data;
-    g_object_set_data(G_OBJECT(widget), "hn-release", 0);
     g_object_set_data(G_OBJECT(widget), "hn-pressed", 0);
     gtk_widget_queue_draw(widget);
-    return FALSE;
-}
-
-static void control_released(GtkWidget *widget, gpointer data) {
-    cancel_release(widget, data);
-    guint timer = g_timeout_add(95, release_control, widget);
-    g_object_set_data(G_OBJECT(widget), "hn-release", GUINT_TO_POINTER(timer));
 }
 
 static void control_pressed(GtkWidget *widget, gpointer data) {
-    cancel_release(widget, data);
+    (void)data;
     g_object_set_data(G_OBJECT(widget), "hn-pressed", GINT_TO_POINTER(1));
     gtk_widget_queue_draw(widget);
     void *window = gtk_widget_get_window(widget);
@@ -315,7 +341,6 @@ static GtkWidget *button(const char *text, GCallback callback, App *app, int val
     if (callback) g_signal_connect(widget, "clicked", callback, app);
     g_signal_connect(widget, "pressed", G_CALLBACK(control_pressed), 0);
     g_signal_connect(widget, "released", G_CALLBACK(control_released), 0);
-    g_signal_connect(widget, "destroy", G_CALLBACK(cancel_release), 0);
     gtk_button_set_relief(GTK_BUTTON(widget), GTK_RELIEF_NONE);
 #if defined(GTK_MAJOR_VERSION) && GTK_MAJOR_VERSION >= 3
     g_signal_connect(widget, "draw", G_CALLBACK(draw_control), 0);
@@ -360,13 +385,12 @@ static void header(App *app) {
     gboolean feed = app->screen == FEED;
     gboolean discussion = app->screen == COMMENTS;
     gboolean scrolling = discussion || app->screen == ARTICLE;
-    const char *title = app->screen == OPTIONS ? "Settings" : "HNink";
-    if (scrolling && app->discussion_title) {
+    const char *title = app->screen == OPTIONS ? "Settings" : app->reading_about ? "About HNink" : "HNink";
+    if (scrolling && !app->reading_about && app->discussion_title) {
         gtk_label_set_text(GTK_LABEL(app->heading), app->discussion_title);
         gtk_widget_set_tooltip_text(app->heading, app->discussion_title);
     } else {
-        char *markup = g_strdup_printf(feed ? "<span size='x-large'>%s</span>"
-            : "<span size='x-large' weight='bold'>%s</span>", title);
+        char *markup = g_strdup_printf("<span size='x-large' weight='bold'>%s</span>", title);
         gtk_label_set_markup(GTK_LABEL(app->heading), markup);
         g_free(markup);
         gtk_widget_set_tooltip_text(app->heading, 0);
@@ -384,8 +408,6 @@ static void header(App *app) {
     action_name(app->left, feed ? "Back to Kindle Home" : "Back");
     if (feed) gtk_widget_show(app->refresh);
     else gtk_widget_hide(app->refresh);
-    if (has_link) gtk_widget_show(app->discussion_globe);
-    else gtk_widget_hide(app->discussion_globe);
     GtkWidget *forward = gtk_bin_get_child(GTK_BIN(app->next));
     g_object_set_data(G_OBJECT(forward), "hn-icon", GINT_TO_POINTER(scrolling ? ICON_DOWN : ICON_NEXT));
     gtk_widget_queue_draw(forward);
@@ -438,13 +460,14 @@ static void show_scroll_controls(App *app, GtkAdjustment *scroll) {
     gtk_widget_show(app->footer);
 }
 
-static GtkWidget *feed_row(App *app, const char *const *fields) {
+/* Rules go between stories only: the rail above and the footer below already frame the list. */
+static GtkWidget *feed_row(App *app, const char *const *fields, gboolean divider) {
     int id = number(fields[0]);
     GtkWidget *row = gtk_hbox_new(FALSE, 2);
     GtkWidget *story_button = button("", G_CALLBACK(open_replies), app, id);
     action_name(story_button, fields[2]);
     gtk_widget_destroy(gtk_bin_get_child(GTK_BIN(story_button)));
-    GtkWidget *rank = label(fields[1], "<span foreground='#555555' size='small'>%s</span>");
+    GtkWidget *rank = label(fields[1], "<span foreground='#333333' size='small'>%s</span>");
     int scale = reader_scale(app, FEED);
     reader_font(app, rank, scale, FALSE);
     gtk_misc_set_alignment(GTK_MISC(rank), 0.5, 0.5);
@@ -458,7 +481,7 @@ static GtkWidget *feed_row(App *app, const char *const *fields) {
     gtk_label_set_ellipsize(GTK_LABEL(title), PANGO_ELLIPSIZE_END);
     gtk_box_pack_start(GTK_BOX(copy), title, FALSE, TRUE, 0);
     if (*fields[3]) {
-        GtkWidget *meta = label(fields[3], "<span foreground='#555555' size='small'>%s</span>");
+        GtkWidget *meta = label(fields[3], "<span foreground='#333333' size='small'>%s</span>");
         reader_font(app, meta, scale, FALSE);
         gtk_widget_set_size_request(meta, -1, app->metadata_height);
         gtk_label_set_ellipsize(GTK_LABEL(meta), PANGO_ELLIPSIZE_END);
@@ -469,15 +492,15 @@ static GtkWidget *feed_row(App *app, const char *const *fields) {
     gtk_box_pack_start(GTK_BOX(row), center, TRUE, TRUE, 0);
     gtk_container_add(GTK_CONTAINER(story_button), row);
     GtkWidget *entry = gtk_vbox_new(FALSE, 0);
+    if (divider) gtk_box_pack_start(GTK_BOX(entry), gtk_hseparator_new(), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(entry), story_button, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(entry), gtk_hseparator_new(), FALSE, FALSE, 0);
     return entry;
 }
 
 static int measure_feed_row(App *app) {
     measure_feed_text(app);
     const char *sample[] = {"0", "99", "Typography", "example.com · 99 points · 99 comments · 2h", ""};
-    GtkWidget *probe = feed_row(app, sample);
+    GtkWidget *probe = feed_row(app, sample, TRUE);
     gtk_box_pack_start(GTK_BOX(app->body), probe, FALSE, FALSE, 0);
     gtk_widget_show_all(probe);
     int height;
@@ -546,7 +569,7 @@ static GtkWidget *scroll_body(App *app) {
     gtk_box_pack_start(GTK_BOX(app->body), scroll, TRUE, TRUE, 0);
     GtkWidget *viewport = gtk_viewport_new(0, 0);
     gtk_viewport_set_shadow_type(GTK_VIEWPORT(viewport), GTK_SHADOW_NONE);
-    gtk_widget_set_name(viewport, "hnreader-paper");
+    gtk_widget_set_name(viewport, "hnink-paper");
     gtk_container_add(GTK_CONTAINER(scroll), viewport);
     app->content = scroll;
     GtkWidget *list = gtk_vbox_new(FALSE, 12);
@@ -610,7 +633,7 @@ static void render_list(App *app, char *output, gboolean comments) {
             const char *fields[5];
             for (int i = 0; i < 5; i++) fields[i] = decode(parts[i + 1]);
             if (!app->first_id) app->first_id = number(fields[0]);
-            GtkWidget *entry = feed_row(app, fields);
+            GtkWidget *entry = feed_row(app, fields, count > 0);
             gtk_widget_set_size_request(entry, -1, app->feed_row_height);
             gtk_box_pack_start(GTK_BOX(app->content), entry, FALSE, TRUE, 0);
             for (int i = 0; i < 5; i++) g_free((char *)fields[i]);
@@ -620,7 +643,7 @@ static void render_list(App *app, char *output, gboolean comments) {
     }
     g_strfreev(lines);
     if (!count) {
-        if (app->feed == 6) message(app, "Saved stories appear here. Open a story and tap Save.");
+        if (app->feed == 6) message(app, "Saved stories appear here. Open a story and tap the bookmark.");
         else message(app, "No stories cached yet. Connect to Wi-Fi and tap Refresh.");
     }
     app->page = page;
@@ -642,35 +665,58 @@ static void toggle_comment(GtkWidget *widget, App *app) {
 
 #include "discussion-io.h"
 
+/* The reader shows either the story's article or, from Settings, the project page. */
+static char *cached_reading(App *app) {
+    if (app->reading_about) return local_command(app, "cached-about", "0", 0, 0, 0);
+    char *id = g_strdup_printf("%d", app->story);
+    char *output = local_command(app, "cached-article", id, 0, 0, 0);
+    g_free(id);
+    return output;
+}
+
+static const char *reading_link(App *app) {
+    return app->reading_about ? PROJECT_URL : app->article_url;
+}
+
+static void open_reader(App *app) {
+    select_screen(app, ARTICLE);
+    char *offline = cached_reading(app);
+    if (offline) g_free(offline);
+    else {
+        say(app, app->reading_about ? "Downloading the project page…" : "Downloading the publisher page…");
+        request(app, (Task){app->reading_about ? LOAD_ABOUT : LOAD_ARTICLE, app->revision, 0, app->story, 0, 0, 0, FALSE});
+    }
+}
+
 static void load_article(GtkWidget *widget, App *app) {
     (void)widget;
     remember_comment_position(app);
-    select_screen(app, ARTICLE);
-    char *id = g_strdup_printf("%d", app->story);
-    char *offline = local_command(app, "cached-article", id, 0, 0, 0);
-    g_free(id);
-    if (offline) g_free(offline);
-    else {
-        say(app, "Downloading the publisher page…");
-        request(app, (Task){LOAD_ARTICLE, app->revision, 0, app->story, 0, 0, 0, FALSE});
-    }
+    app->reading_about = FALSE;
+    open_reader(app);
+}
+
+static void load_about(GtkWidget *widget, App *app) {
+    (void)widget;
+    app->reading_about = TRUE;
+    open_reader(app);
 }
 
 #include "account.h"
 
 static void bookmark(GtkWidget *widget, App *app) {
     (void)widget;
+    /* Saved is always local, so the Saved feed lists every bookmark. Signed in, saving
+       also adds the story to Hacker News Favorites. */
+    if (app->account_watch) return;
     char *id = g_strdup_printf("%d", app->story);
-    if (app->username) {
-        if (!app->account_watch)
-            start_account_request(app, "favorite", id, 0);
-    } else {
-        char *result = local_command(app, "bookmark", id, 0, 0, 0);
-        if (result) {
-            app->discussion_saved = !app->discussion_saved;
-            g_free(result);
-        } else say(app, "Could not save the story.");
-    }
+    char *result = local_command(app, "bookmark", id, 0, 0, 0);
+    if (result) {
+        app->discussion_saved = !app->discussion_saved;
+        g_free(result);
+        if (app->discussion_saved && app->username) start_account_request(app, "favorite", id, 0);
+        else if (!app->discussion_saved && app->username)
+            say(app, "Removed from Saved. It stays in your Hacker News Favorites.");
+    } else say(app, "Couldn’t save the story.");
     g_free(id);
     update_bookmark(app);
 }
@@ -692,7 +738,8 @@ static void link_dialog(App *app, const char *address) {
 
 static void show_link(GtkWidget *widget, App *app) {
     (void)widget;
-    if (app->article_url && *app->article_url) link_dialog(app, app->article_url);
+    const char *link = reading_link(app);
+    if (link && *link) link_dialog(app, link);
 }
 
 static void browser_finished(GPid pid, gint status, gpointer data) {
@@ -725,7 +772,7 @@ static void launch_browser(App *app, const char *url) {
 
 static void open_publisher(GtkWidget *widget, App *app) {
     (void)widget;
-    launch_browser(app, app->article_url);
+    launch_browser(app, reading_link(app));
 }
 
 static void comment_link_clicked(GtkWidget *widget, App *app) {
@@ -734,9 +781,7 @@ static void comment_link_clicked(GtkWidget *widget, App *app) {
 
 static void render_article(App *app) {
     app->reading_position = 0;
-    char *id = g_strdup_printf("%d", app->story);
-    char *output = local_command(app, "cached-article", id, 0, 0, 0);
-    g_free(id);
+    char *output = cached_reading(app);
     if (app->content) gtk_widget_destroy(app->content);
     if (output && g_str_has_prefix(output, "article\t")) {
         GtkWidget *scroll = gtk_scrolled_window_new(0, 0);
@@ -761,8 +806,12 @@ static void render_article(App *app) {
     } else {
         app->content = 0;
         clear_content(app, FALSE);
-        message(app, "Readable publisher text appears here when available.");
-        gtk_box_pack_start(GTK_BOX(app->content), action(ICON_LINK, "Show publisher link", G_CALLBACK(show_link), app, 0), FALSE, TRUE, 0);
+        message(app, "Readable text appears here when available. "
+            "If it doesn’t, open the page in the Kindle browser or show its link.");
+        GtkWidget *choices = gtk_hbox_new(TRUE, 8);
+        gtk_box_pack_start(GTK_BOX(choices), button("Open in browser", G_CALLBACK(open_publisher), app, 0), TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(choices), button("Show link", G_CALLBACK(show_link), app, 0), TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(app->content), choices, FALSE, TRUE, 0);
     }
     g_free(output);
     gtk_widget_show_all(app->content);
@@ -778,37 +827,86 @@ static void choose_feed(GtkWidget *widget, App *app) {
     app->feed = feed;
     app->feed_size = fit_feed(app);
     select_screen(app, FEED);
-    if (app->feed != 6) refresh_feed(app, FALSE);
+    if (app->feed != 6 && app->check_on_open) refresh_feed(app, FALSE);
 }
 
-static gboolean save_button_setting(App *app, const char *name, int value) {
+static gboolean save_setting(App *app, const char *name, int value) {
     char *path = g_build_filename(app->cache, name, (void *)0);
     char *setting = g_strdup_printf("%d", value);
     gboolean saved = g_file_set_contents(path, setting, -1, 0);
     g_free(setting);
     g_free(path);
-    say(app, saved ? "" : "Couldn’t save the page button setting.");
+    say(app, saved ? "" : "Couldn’t save the setting.");
     return saved;
+}
+
+/* Repaint only the options in one group, so Settings keeps its scroll position. */
+static void select_choice(GtkWidget **group, int count, GtkWidget *chosen) {
+    for (int i = 0; i < count; ++i) {
+        if (!group[i]) continue;
+        g_object_set_data(G_OBJECT(group[i]), "hn-selected", GINT_TO_POINTER(group[i] == chosen));
+        gtk_widget_queue_draw(group[i]);
+    }
 }
 
 static void choose_page_buttons(GtkWidget *widget, App *app) {
     gboolean reversed = value_of(widget) != 0;
-    if (!save_button_setting(app, "reverse-page-buttons", reversed)) return;
+    if (reversed == app->reverse_page_buttons || !save_setting(app, "reverse-page-buttons", reversed)) return;
     app->reverse_page_buttons = reversed;
-    render(app, 0);
+    select_choice(app->button_choice, 2, widget);
 }
 
 static void choose_scroll_distance(GtkWidget *widget, App *app) {
     int divisor = value_of(widget);
-    if (!save_button_setting(app, "scroll-distance", divisor)) return;
+    if (divisor == app->scroll_divisor || !save_setting(app, "scroll-distance", divisor)) return;
     app->scroll_divisor = divisor;
-    render(app, 0);
+    select_choice(app->distance_choice, SCROLL_DISTANCE_COUNT, widget);
+}
+
+static void choose_check_on_open(GtkWidget *widget, App *app) {
+    gboolean check = value_of(widget) != 0;
+    if (check == app->check_on_open || !save_setting(app, "check-on-open", check)) return;
+    app->check_on_open = check;
+    select_choice(app->check_choice, 2, widget);
 }
 
 static GtkWidget *setting_choice(const char *text, GCallback callback, App *app, int value, gboolean selected) {
-    GtkWidget *choice = button(text, selected ? 0 : callback, app, value);
+    GtkWidget *choice = button(text, callback, app, value);
     g_object_set_data(G_OBJECT(choice), "hn-selected", GINT_TO_POINTER(selected));
     return choice;
+}
+
+/* One quiet line closing Settings. The whole row opens the project page in the reader. */
+static void render_credit(App *app) {
+    GtkWidget *credit = button("", G_CALLBACK(load_about), app, 0);
+    gtk_widget_destroy(gtk_bin_get_child(GTK_BIN(credit)));
+    action_name(credit, "HNink " HNINK_VERSION ", AlirezaXdehghan/HNink on GitHub");
+    GtkWidget *row = gtk_hbox_new(FALSE, 6);
+    gtk_box_pack_start(GTK_BOX(row), label("HNink " HNINK_VERSION "  ·", "<span size='small' foreground='#333333'>%s</span>"),
+        FALSE, FALSE, 0);
+    if (app->project_mark) {
+        GtkWidget *mark = icon_widget(ICON_IMAGE, app->icon_size / 2);
+        g_object_set_data(G_OBJECT(mark), "hn-image", app->project_mark);
+        gtk_box_pack_start(GTK_BOX(row), mark, FALSE, FALSE, 0);
+    }
+    gtk_box_pack_start(GTK_BOX(row), label("AlirezaXdehghan/HNink", "<span size='small' foreground='#333333'>%s</span>"),
+        FALSE, FALSE, 0);
+    GtkWidget *center = gtk_alignment_new(0.5, 0.5, 0, 0);
+    gtk_container_add(GTK_CONTAINER(center), row);
+    gtk_container_add(GTK_CONTAINER(credit), center);
+    gtk_box_pack_start(GTK_BOX(app->content), credit, FALSE, TRUE, 16);
+}
+
+static void section(App *app, const char *title) {
+    GtkWidget *widget = label(title, "<span weight='bold'>%s</span>");
+    gtk_box_pack_start(GTK_BOX(app->content), widget, FALSE, TRUE, 6);
+}
+
+static GtkWidget *choice_row(App *app, const char *title) {
+    message(app, title);
+    GtkWidget *row = gtk_hbox_new(TRUE, 8);
+    gtk_box_pack_start(GTK_BOX(app->content), row, FALSE, TRUE, 0);
+    return row;
 }
 
 static GtkWidget *new_picker(void) {
@@ -834,25 +932,36 @@ static void render_options(App *app) {
     GtkWidget *list = scroll_body(app);
     GtkWidget *scroll = app->content;
     app->content = list;
-    render_account(app);
-    gtk_box_pack_start(GTK_BOX(list), gtk_hseparator_new(), FALSE, TRUE, 0);
+    section(app, "Text");
     render_typography(app);
     gtk_box_pack_start(GTK_BOX(list), gtk_hseparator_new(), FALSE, TRUE, 0);
-    message(app, "Scroll distance");
-    GtkWidget *distances = gtk_hbox_new(TRUE, 8);
+
+    section(app, "Reading");
+    GtkWidget *distances = choice_row(app, "Scroll distance");
     for (int divisor = SCROLL_DISTANCE_COUNT; divisor >= 1; --divisor) {
         GtkWidget *choice = setting_choice(scroll_distances[divisor - 1], G_CALLBACK(choose_scroll_distance),
             app, divisor, divisor == app->scroll_divisor);
+        app->distance_choice[divisor - 1] = choice;
         gtk_box_pack_start(GTK_BOX(distances), choice, TRUE, TRUE, 0);
     }
-    gtk_box_pack_start(GTK_BOX(app->content), distances, FALSE, TRUE, 0);
-    message(app, "Physical page buttons");
-    GtkWidget *page_buttons = gtk_hbox_new(TRUE, 8);
-    GtkWidget *standard = setting_choice("Standard", G_CALLBACK(choose_page_buttons), app, 0, !app->reverse_page_buttons);
-    GtkWidget *reversed = setting_choice("Reversed", G_CALLBACK(choose_page_buttons), app, 1, app->reverse_page_buttons);
-    gtk_box_pack_start(GTK_BOX(page_buttons), standard, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(page_buttons), reversed, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(app->content), page_buttons, FALSE, TRUE, 0);
+    app->button_choice[0] = app->button_choice[1] = 0;
+    if (app->page_buttons_watch) {
+        GtkWidget *page_buttons = choice_row(app, "Physical page buttons");
+        app->button_choice[0] = setting_choice("Standard", G_CALLBACK(choose_page_buttons), app, 0, !app->reverse_page_buttons);
+        app->button_choice[1] = setting_choice("Reversed", G_CALLBACK(choose_page_buttons), app, 1, app->reverse_page_buttons);
+        gtk_box_pack_start(GTK_BOX(page_buttons), app->button_choice[0], TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(page_buttons), app->button_choice[1], TRUE, TRUE, 0);
+    }
+    GtkWidget *checks = choice_row(app, "Check for new stories when opening");
+    app->check_choice[0] = setting_choice("On", G_CALLBACK(choose_check_on_open), app, 1, app->check_on_open);
+    app->check_choice[1] = setting_choice("Off", G_CALLBACK(choose_check_on_open), app, 0, !app->check_on_open);
+    gtk_box_pack_start(GTK_BOX(checks), app->check_choice[0], TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(checks), app->check_choice[1], TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(list), gtk_hseparator_new(), FALSE, TRUE, 0);
+
+    section(app, "Hacker News account");
+    render_account(app);
+    render_credit(app);
     app->content = scroll;
     gtk_widget_show_all(app->content);
     pagination(app, 1, 1, FALSE);
@@ -890,7 +999,8 @@ static void finished(GPid pid, gint status, gpointer data) {
     gboolean same_feed = task.operation == SYNC && app->screen == FEED && task.feed == app->feed;
     if (current || same_feed) {
         if (status != 0) {
-            if (task.operation == LOAD_ARTICLE) say(app, "Article unavailable. You can still open the publisher link on another device.");
+            if (task.operation == LOAD_ARTICLE) say(app, "Couldn’t extract the article text.");
+            else if (task.operation == LOAD_ABOUT) say(app, "Couldn’t load the project page.");
             else say(app, task.fresh ? "Couldn’t reach Hacker News. Showing cached stories." : "Offline · cached stories");
         } else {
             say(app, "");
@@ -912,7 +1022,7 @@ static void request(App *app, Task task) {
         app->queued = TRUE;
         return;
     }
-    const char *operations[] = {"sync", "hydrate", "article"};
+    const char *operations[] = {"sync", "hydrate", "article", "about"};
     char *id = g_strdup_printf("%d", task.id);
     char *page = g_strdup_printf("%d", task.page);
     char *size = g_strdup_printf("%d", task.size);
@@ -979,12 +1089,6 @@ static void open_replies(GtkWidget *widget, App *app) {
         app->article_url = decode(parts[5]);
         char *saved = decode(g_strchomp(parts[7]));
         app->discussion_saved = g_str_equal(saved, "true");
-        app->discussion_favorite = FALSE;
-        if (app->username) {
-            char *favorite = local_command(app, "favorite-status", story_id, 0, 0, 0);
-            app->discussion_favorite = favorite && g_str_has_prefix(favorite, "favorite\t");
-            g_free(favorite);
-        }
         g_free(saved);
         g_strfreev(parts);
         g_free(detail);
@@ -1012,7 +1116,10 @@ static void navigate(App *app, int delta) {
     GtkAdjustment *scroll = app->screen == COMMENTS ? app->comment_scroll :
         app->screen == ARTICLE ? app->reading_position : 0;
     if (!scroll) return;
-    double step = gtk_adjustment_get_page_size(scroll) / app->scroll_divisor;
+    double page = gtk_adjustment_get_page_size(scroll);
+    /* A full page keeps one line of overlap so the reader doesn't lose their place. */
+    double step = app->scroll_divisor == 1 ? page - reader_line(app, app->screen) : page / app->scroll_divisor;
+    if (step < page / 4) step = page / 4;
     gtk_adjustment_set_value(scroll, gtk_adjustment_get_value(scroll) + delta * step);
 }
 
@@ -1032,6 +1139,10 @@ static void go_back(GtkWidget *widget, App *app) {
     } else if (app->screen == COMMENTS && app->depth > 0) {
         app->depth--;
         select_screen(app, COMMENTS);
+    } else if (app->screen == ARTICLE && app->reading_about) {
+        app->reading_about = FALSE;
+        select_screen(app, OPTIONS);
+        g_idle_add(settings_to_end, app);
     } else if (app->screen == ARTICLE) {
         select_screen(app, COMMENTS);
     } else if (app->screen == OPTIONS) {
@@ -1054,19 +1165,19 @@ static gboolean start(gpointer data) {
     app->ready = TRUE;
     app->feed_size = fit_feed(app);
     render(app, 0);
-    refresh_feed(app, FALSE);
+    if (app->check_on_open) refresh_feed(app, FALSE);
     return FALSE;
 }
 
 int main(int argc, char **argv) {
     if (argc != 3) {
-        g_printerr("Usage: hnreader PATH-TO-DATA-BINARY CACHE-DIR\n");
+        g_printerr("Usage: hnink-ui PATH-TO-DATA-BINARY CACHE-DIR\n");
         return 2;
     }
     App app = {0};
     app.backend = argv[1];
     app.cache = argv[2];
-    app.scroll_divisor = 2;
+    app.scroll_divisor = 1;
     app.page = 1;
     if (!gtk_init_check(&argc, &argv)) {
         g_printerr("HNink could not connect to the display.\n");
@@ -1076,43 +1187,42 @@ int main(int argc, char **argv) {
     app.collapsed = g_hash_table_new(0, 0);
     load_typography(&app);
     load_account(&app);
-    char *path = g_build_filename(app.cache, "reverse-page-buttons", (void *)0);
-    char *setting = 0;
-    if (g_file_get_contents(path, &setting, 0, 0))
-        app.reverse_page_buttons = number(setting) == 1;
-    g_free(setting);
-    g_free(path);
-
-    path = g_build_filename(app.cache, "scroll-distance", (void *)0);
-    setting = 0;
-    if (g_file_get_contents(path, &setting, 0, 0)) {
-        int divisor = number(setting);
-        if (divisor >= 1 && divisor <= SCROLL_DISTANCE_COUNT) app.scroll_divisor = divisor;
-    }
-    g_free(setting);
-    g_free(path);
+    app.reverse_page_buttons = read_setting(&app, "reverse-page-buttons", 0) == 1;
+    int divisor = read_setting(&app, "scroll-distance", app.scroll_divisor);
+    if (divisor >= 1 && divisor <= SCROLL_DISTANCE_COUNT) app.scroll_divisor = divisor;
+    app.check_on_open = read_setting(&app, "check-on-open", 1) != 0;
 
     gtk_rc_parse_string(
-        "style \"hnreader-paper\" { bg[NORMAL] = \"#ffffff\" } "
-        "widget \"*hnreader-paper\" style \"hnreader-paper\" "
-        "style \"hnreader-scrollbar\" { "
+        "style \"hnink-paper\" { bg[NORMAL] = \"#ffffff\" } "
+        "widget \"*hnink-paper\" style \"hnink-paper\" "
+        "style \"hnink-scrollbar\" { "
         "GtkRange::slider-width = 14 GtkRange::trough-border = 2 GtkScrollbar::min-slider-length = 64 "
         "bg[NORMAL] = \"#303030\" bg[ACTIVE] = \"#dedede\" bg[PRELIGHT] = \"#202020\" } "
-        "widget \"*hnreader-discussion-scrollbar\" style \"hnreader-scrollbar\"");
+        "widget \"*hnink-discussion-scrollbar\" style \"hnink-scrollbar\"");
 #if defined(GTK_MAJOR_VERSION) && GTK_MAJOR_VERSION >= 3
     GtkCssProvider *paper = gtk_css_provider_new();
     gtk_css_provider_load_from_data(paper,
-        "#hnreader-paper { background: #fff; color: #191919; }"
-        "#hnreader-discussion-scrollbar trough { background: #e0e0e0; min-width: 12px; }"
-        "#hnreader-discussion-scrollbar slider { background: #333; min-width: 12px; min-height: 56px; }",
+        "#hnink-paper { background: #fff; color: #191919; }"
+        "#hnink-discussion-scrollbar trough { background: #e0e0e0; min-width: 12px; }"
+        "#hnink-discussion-scrollbar slider { background: #333; min-width: 12px; min-height: 56px; }",
         -1, NULL);
     gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), GTK_STYLE_PROVIDER(paper),
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(paper);
 #endif
     app.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_widget_set_name(app.window, "hnreader-paper");
+    gtk_widget_set_name(app.window, "hnink-paper");
     gtk_widget_ensure_style(app.window);
+    /* The official GitHub mark ships next to the binaries; without it the credit is text only. */
+    char *app_dir = g_path_get_dirname(app.backend);
+    char *mark_path = g_build_filename(app_dir, "github-mark.png", (void *)0);
+    app.project_mark = cairo_image_surface_create_from_png(mark_path);
+    if (cairo_surface_status(app.project_mark) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(app.project_mark);
+        app.project_mark = 0;
+    }
+    g_free(mark_path);
+    g_free(app_dir);
     app.ui_font = pango_font_description_copy(
         pango_context_get_font_description(gtk_widget_get_pango_context(app.window)));
     find_font_families(&app);
@@ -1151,9 +1261,7 @@ int main(int argc, char **argv) {
     gtk_box_pack_end(GTK_BOX(app.header), app.scroll_up, FALSE, FALSE, 0);
     app.discussion_save = action(ICON_SAVE, "Save story", G_CALLBACK(bookmark), &app, 0);
     gtk_box_pack_end(GTK_BOX(app.header), app.discussion_save, FALSE, FALSE, 0);
-    app.discussion_globe = action(ICON_GLOBE, "Open article in browser", G_CALLBACK(open_publisher), &app, 0);
-    gtk_box_pack_end(GTK_BOX(app.header), app.discussion_globe, FALSE, FALSE, 0);
-    app.discussion_book = action(ICON_BOOK, "Read in HNink", G_CALLBACK(load_article), &app, 0);
+    app.discussion_book = action(ICON_BOOK, "Read article", G_CALLBACK(load_article), &app, 0);
     gtk_box_pack_end(GTK_BOX(app.header), app.discussion_book, FALSE, FALSE, 0);
     app.options = action(ICON_GEAR, "Settings", G_CALLBACK(show_options), &app, 0);
     gtk_box_pack_end(GTK_BOX(app.header), app.options, FALSE, FALSE, 0);
@@ -1175,6 +1283,10 @@ int main(int argc, char **argv) {
     gtk_label_set_ellipsize(GTK_LABEL(app.status), PANGO_ELLIPSIZE_END);
     gtk_box_pack_start(GTK_BOX(app.status_rail), app.feed_picker, FALSE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(app.status_rail), app.status, TRUE, TRUE, 0);
+    app.update_button = button("Show", G_CALLBACK(show_discussion_update), &app, 0);
+    action_name(app.update_button, "Show updated comments");
+    gtk_widget_set_no_show_all(app.update_button, TRUE);
+    gtk_box_pack_end(GTK_BOX(app.status_rail), app.update_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(stack), app.status_rail, FALSE, TRUE, 0);
     app.rail_divider = gtk_hseparator_new();
     gtk_box_pack_start(GTK_BOX(stack), app.rail_divider, FALSE, FALSE, 0);
@@ -1219,10 +1331,13 @@ int main(int argc, char **argv) {
 #endif
     if (app.feed_layout_idle) g_source_remove(app.feed_layout_idle);
     pango_font_description_free(app.ui_font);
+    if (app.project_mark) cairo_surface_destroy(app.project_mark);
     stop_discussion_read(&app);
     clear_comment_window(&app);
     g_hash_table_destroy(app.collapsed);
     g_free(app.browser_url);
+    g_free(app.discussion_pending);
+    g_free(app.update_text);
     g_free(app.last_output);
     g_free(app.notice);
     g_free(app.article_url);

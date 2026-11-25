@@ -48,12 +48,13 @@ def build(mode, output):
     )
     interpreter = "/lib/ld-linux-armhf.so.3" if mode == "hard" else "/lib/ld-linux.so.3"
     prefix = os.environ.get("ARM_BINUTILS_PREFIX", "arm-none-eabi-")
-    with tempfile.TemporaryDirectory(prefix="hnreader-arm-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="hnink-arm-") as tmp:
         tmp = Path(tmp)
         main = str(tmp / "main.o")
         start = str(tmp / "start.o")
+        version = os.environ.get("HNINK_VERSION", "dev")
         run(compiler, *compiler_flags, "-ffreestanding", "-fno-stack-protector", "-fno-pie",
-            "-DHNREADER_ARM_IMPORTS", "-Werror", "-Wall", "-Wextra", "-O2", "-I", str(ROOT / "tools"),
+            "-DHNINK_ARM_IMPORTS", f'-DHNINK_VERSION="{version}"', "-Werror", "-Wall", "-Wextra", "-O2", "-I", str(ROOT / "tools"),
             "-c", str(ROOT / "src/main.c"), "-o", main)
         run(compiler, *compiler_flags, "-c", str(ROOT / "tools/arm-start.S"), "-o", start)
         inputs = (main, start)

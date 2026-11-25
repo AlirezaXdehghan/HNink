@@ -1,4 +1,4 @@
-#ifdef HNREADER_ARM_IMPORTS
+#ifdef HNINK_ARM_IMPORTS
 /* Linux ARM EABI input_event and EVIOCGBIT for the sysroot-free build. */
 struct input_event {
     long seconds, microseconds;

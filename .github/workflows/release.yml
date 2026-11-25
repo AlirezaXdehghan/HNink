@@ -1,0 +1,46 @@
+# A tag publishes a release. vX.Y.Z-beta.N is a pre-release (USB zip only);
+# vX.Y.Z is stable and also carries the KPM package. The tag must match meson.build.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.12'
+      - name: Install the ARM toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang binutils-arm-none-eabi zip
+      - name: Check the tag against meson.build
+        run: |
+          version=$(sed -n "s/^project(.*version: '\([^']*\)'.*/\1/p" meson.build)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match meson.build version $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build
+        run: sh tools/release.sh "$VERSION" dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$VERSION" in
+            *-*) gh release create "$GITHUB_REF_NAME" dist/HNink-*.zip \
+                   --prerelease --generate-notes --title "HNink $VERSION" ;;
+            *)   gh release create "$GITHUB_REF_NAME" dist/HNink-*.zip dist/*.kpkg \
+                   --generate-notes --title "HNink $VERSION" ;;
+          esac
+      # Betas keep the KPM package as a build artifact, so packaging is tested before it ships.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hnink-${{ env.VERSION }}
+          path: dist/*.kpkg

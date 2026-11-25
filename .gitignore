@@ -4,3 +4,4 @@ __pycache__/
 /package/hnink/data/
 /package/hnink/hnink-data
 /package/hnink/hnink-ui-arm*
+/dist/

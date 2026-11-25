@@ -1,5 +1,16 @@
 typedef enum { ICON_NONE, ICON_ARROW_LEFT, ICON_BACK, ICON_NEXT, ICON_REFRESH, ICON_GEAR,
-    ICON_CHAT, ICON_BOOK, ICON_LINK, ICON_SAVE, ICON_SAVED, ICON_GLOBE, ICON_UP, ICON_DOWN, ICON_MINUS, ICON_PLUS } Icon;
+    ICON_CHAT, ICON_BOOK, ICON_LINK, ICON_SAVE, ICON_SAVED, ICON_GLOBE, ICON_UP, ICON_DOWN, ICON_MINUS, ICON_PLUS,
+    ICON_IMAGE } Icon;
+
+/* A shipped monochrome PNG, painted through its alpha in the icon ink. */
+static void paint_image(GtkWidget *area, cairo_t *cr, int size, double ink) {
+    cairo_surface_t *image = g_object_get_data(G_OBJECT(area), "hn-image");
+    int width = image ? cairo_image_surface_get_width(image) : 0;
+    if (width <= 0) return;
+    cairo_scale(cr, (double)size / width, (double)size / width);
+    cairo_set_source_rgb(cr, ink, ink, ink);
+    cairo_mask_surface(cr, image, 0, 0);
+}
 
 static void icon_path(cairo_t *cr, double a, double b, double c, double d, double e, double f) {
     cairo_move_to(cr, a, b);
@@ -13,15 +24,21 @@ static void paint_icon(GtkWidget *area, cairo_t *cr) {
     cairo_save(cr);
     int size = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(area), "hn-icon-size"));
     cairo_translate(cr, (bounds.width - size) / 2.0, (bounds.height - size) / 2.0);
+    double ink = gtk_widget_is_sensitive(area) ? 0.09 : 0.65;
+    if (g_object_get_data(G_OBJECT(area), "hn-icon") == GINT_TO_POINTER(ICON_IMAGE)) {
+        paint_image(area, cr, size, ink);
+        cairo_restore(cr);
+        return;
+    }
     double scale = size / 24.0;
     cairo_scale(cr, scale, scale);
-    double ink = gtk_widget_is_sensitive(area) ? 0.09 : 0.65;
     cairo_set_source_rgb(cr, ink, ink, ink);
     cairo_set_line_width(cr, 1.75);
     cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
     cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
     switch (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(area), "hn-icon"))) {
-    case ICON_NONE: break;
+    case ICON_NONE:
+    case ICON_IMAGE: break;
     case ICON_ARROW_LEFT:
         icon_path(cr, 11.5, 5, 4.5, 12, 11.5, 19);
         cairo_move_to(cr, 4.5, 12);

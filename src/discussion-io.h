@@ -5,6 +5,52 @@ typedef struct {
     gboolean received;
 } DiscussionInput;
 
+/* True while the discussion on screen still has loading placeholders or no comments. */
+static gboolean discussion_incomplete(App *app) {
+    gboolean any = FALSE;
+    for (int i = 0; i < app->comment_count; ++i) {
+        if (app->comment_rows[i].placeholder_text == loading_comment) return TRUE;
+        if (app->comment_rows[i].wire && !app->comment_rows[i].placeholder_text) any = TRUE;
+    }
+    return !any;
+}
+
+static int count_comments(const char *frame) {
+    int count = 0;
+    gboolean line_start = TRUE;
+    for (const char *p = frame; p && *p; ++p) {
+        if (line_start && g_str_has_prefix(p, "comment\t")) ++count;
+        line_start = *p == '\n';
+    }
+    return count;
+}
+
+static void offer_discussion_update(App *app) {
+    if (!app->discussion_pending) return;
+    if (app->last_output && g_str_equal(app->discussion_pending, app->last_output)) {
+        drop_discussion_update(app);
+        return;
+    }
+    int added = count_comments(app->discussion_pending) - count_comments(app->last_output);
+    g_free(app->update_text);
+    app->update_text = added > 0
+        ? g_strdup_printf("%d new comment%s", added, added == 1 ? "" : "s")
+        : g_strdup("Comments updated");
+    app->update_shown = TRUE;
+    gtk_widget_show(app->update_button);
+    say(app, "");
+}
+
+static void show_discussion_update(GtkWidget *widget, App *app) {
+    (void)widget;
+    char *frame = app->discussion_pending;
+    app->discussion_pending = 0;
+    drop_discussion_update(app);
+    say(app, "");
+    if (frame && app->screen == COMMENTS) render_list(app, frame, TRUE);
+    else g_free(frame);
+}
+
 static void free_discussion_input(gpointer data) {
     DiscussionInput *input = data;
     g_string_free(input->buffer, TRUE);
@@ -38,10 +84,16 @@ static gboolean read_discussion(GIOChannel *pipe, GIOCondition condition, gpoint
     }
     if (frame) {
         g_string_erase(buffer, 0, complete);
-        if (!app->notice || !g_str_equal(app->notice, "No comments yet.") ||
-            !app->last_output || !g_str_equal(app->last_output, frame)) say(app, "");
+        if (!input->received || discussion_incomplete(app)) {
+            if (!app->notice || !g_str_equal(app->notice, "No comments yet.") ||
+                !app->last_output || !g_str_equal(app->last_output, frame)) say(app, "");
+            render_list(app, frame, TRUE);
+        } else {
+            /* Don't repaint a page the reader is reading. Hold the newer version. */
+            g_free(app->discussion_pending);
+            app->discussion_pending = frame;
+        }
         input->received = TRUE;
-        render_list(app, frame, TRUE);
     }
     input->scanned = buffer->len;
     if (result == G_IO_STATUS_NORMAL || length || (result == G_IO_STATUS_AGAIN && !(condition & G_IO_HUP)))
@@ -54,6 +106,7 @@ static gboolean read_discussion(GIOChannel *pipe, GIOCondition condition, gpoint
         mount_discussion(app, app->last_output);
         break;
     }
+    offer_discussion_update(app);
     return FALSE;
 }
 
@@ -65,7 +118,7 @@ static void reap_child(GPid pid, gint status, gpointer data) {
 
 static void start_discussion_read(App *app) {
     stop_discussion_read(app);
-    say(app, loading_comment);
+    say(app, loading_comments);
     char *id = g_strdup_printf("%d", app->comment_id[app->depth]);
     char *argv[] = {(char *)app->backend, (char *)app->cache, "discussion", id, "cached", 0};
     GPid pid;

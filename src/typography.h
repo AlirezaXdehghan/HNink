@@ -1,26 +1,10 @@
 static void load_typography(App *app) {
-    int size = SYSTEM_SIZE;
-    char *path = g_build_filename(app->cache, "text-size", (void *)0);
+    /* Comments start one step larger: they are long reads in a narrower, indented column. */
+    app->typography = (Typography){0, 0, {SYSTEM_SIZE, SYSTEM_SIZE + 2, SYSTEM_SIZE}};
+    char *path = g_build_filename(app->cache, "typography", (void *)0);
     char *setting = 0;
     if (g_file_get_contents(path, &setting, 0, 0)) {
-        int old = number(setting);
-        if (old >= 0 && old < 4) size = 1 + old * 2;
-    } else {
-        g_free(path);
-        path = g_build_filename(app->cache, "density", (void *)0);
-        if (g_file_get_contents(path, &setting, 0, 0)) {
-            if (number(setting) == 0) size = 5;
-            if (number(setting) == 2) size = 1;
-        }
-    }
-    g_free(setting);
-    g_free(path);
-    app->typography = (Typography){0, 0, {size, size, size}};
-
-    path = g_build_filename(app->cache, "typography", (void *)0);
-    setting = 0;
-    if (g_file_get_contents(path, &setting, 0, 0)) {
-        char **parts = g_strsplit(setting, " ", 0);
+        char **parts = g_strsplit(g_strchomp(setting), " ", 0);
         if (g_strv_length(parts) == 5) {
             int family = number(parts[0]);
             int bold = number(parts[1]);
@@ -85,10 +69,8 @@ static void update_typography_controls(App *app) {
 }
 
 static void update_typography_preview(App *app) {
-    static const char *samples[] = {"A story worth reading", "What do you think?", "A quiet moment to read."};
-    Screen area = app->preview_area;
-    gtk_label_set_text(GTK_LABEL(app->typography_preview), samples[area]);
-    reader_font(app, app->typography_preview, reader_scale(app, area), FALSE);
+    for (int area = FEED; area <= ARTICLE; ++area)
+        reader_font(app, app->typography_preview[area], reader_scale(app, area), area == FEED);
 }
 
 static void adjust_typography(GtkWidget *widget, App *app) {
@@ -99,7 +81,6 @@ static void adjust_typography(GtkWidget *widget, App *app) {
     if (row == BOLD_CONTROL) next.bold += delta;
     else next.size[row] += delta;
     if (!save_typography(app, next)) return;
-    if (row != BOLD_CONTROL) app->preview_area = (Screen)row;
     update_typography_preview(app);
     update_typography_controls(app);
 }
@@ -142,10 +123,14 @@ static void choose_font_family(GtkWidget *widget, App *app) {
 }
 
 static void render_typography(App *app) {
-    app->typography_preview = label("", 0);
+    static const char *samples[] = {"Feed: A story worth reading", "Comments: What do you think?",
+        "Article: A quiet moment to read."};
+    for (int area = FEED; area <= ARTICLE; ++area) {
+        app->typography_preview[area] = label(samples[area], 0);
+        wrap(app->typography_preview[area]);
+        gtk_box_pack_start(GTK_BOX(app->content), app->typography_preview[area], FALSE, TRUE, 2);
+    }
     update_typography_preview(app);
-    gtk_label_set_ellipsize(GTK_LABEL(app->typography_preview), PANGO_ELLIPSIZE_END);
-    gtk_box_pack_start(GTK_BOX(app->content), app->typography_preview, FALSE, TRUE, 8);
     gtk_box_pack_start(GTK_BOX(app->content), gtk_hseparator_new(), FALSE, TRUE, 0);
 
     GtkWidget *line = gtk_hbox_new(FALSE, 8);
@@ -166,7 +151,6 @@ static void render_typography(App *app) {
     gtk_box_pack_start(GTK_BOX(app->content), line, FALSE, TRUE, 0);
 
     stepper(app, BOLD_CONTROL, "Boldness");
-    gtk_box_pack_start(GTK_BOX(app->content), gtk_hseparator_new(), FALSE, TRUE, 0);
     for (int n = FEED; n <= ARTICLE; ++n)
         stepper(app, n, size_labels[n]);
     update_typography_controls(app);

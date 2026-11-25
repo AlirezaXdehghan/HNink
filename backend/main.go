@@ -203,7 +203,7 @@ func write(path string, data any) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".hnreader-*")
+	f, err := os.CreateTemp(dir, ".hnink-*")
 	if err != nil {
 		return err
 	}
@@ -224,7 +224,7 @@ func (a app) getJSON(ctx context.Context, path string, into any) error {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "HNreader/1.0")
+	req.Header.Set("User-Agent", "HNink/"+version)
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return err
@@ -663,12 +663,48 @@ func (a app) article(ctx context.Context, id int, cachedOnly bool) (string, erro
 	if !ok || i.URL == "" {
 		return "", errors.New("this story has no publisher link")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, i.URL, nil)
+	text, err := readablePage(ctx, i.URL)
+	if err != nil {
+		return "", err
+	}
+	if err := write(path, text); err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+// projectURL is the page Settings links to. GitHub renders the README inside <article>,
+// so the in-app reader can show it without leaving HNink.
+const projectURL = "https://github.com/AlirezaXdehghan/HNink"
+
+// about returns the project page text, refreshed at most once a week.
+func (a app) about(ctx context.Context, cachedOnly bool) (string, error) {
+	path := a.path("articles", "about")
+	if info, err := os.Stat(path); err == nil && time.Since(info.ModTime()) < 7*24*time.Hour {
+		if text, ok := load[string](path); ok && text != "" {
+			return text, nil
+		}
+	}
+	if cachedOnly {
+		return "", errors.New("project page has not been downloaded")
+	}
+	text, err := readablePage(ctx, projectURL)
+	if err != nil {
+		return "", err
+	}
+	if err := write(path, text); err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+func readablePage(ctx context.Context, address string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Accept", "text/html, text/plain;q=0.9")
-	req.Header.Set("User-Agent", "HNreader/1.0")
+	req.Header.Set("User-Agent", "HNink/"+version)
 	res, err := newArticleClient().Do(req)
 	if err != nil {
 		return "", errors.New("publisher could not be reached")
@@ -692,9 +728,6 @@ func (a app) article(ctx context.Context, id int, cachedOnly bool) (string, erro
 	}
 	if strings.TrimSpace(text) == "" {
 		return "", errors.New("no readable article text found")
-	}
-	if err := write(path, text); err != nil {
-		return "", err
 	}
 	return text, nil
 }
@@ -738,6 +771,12 @@ func run(ctx context.Context, a app, w io.Writer, args []string) error {
 			return nil
 		}
 		a.view(w, arg, page, size, anchor)
+	case "about", "cached-about":
+		text, err := a.about(ctx, at(0) == "cached-about")
+		if err != nil {
+			return err
+		}
+		record(w, "article", text)
 	case "detail", "read", "bookmark", "comments", "fetch-comments", "discussion", "article", "cached-article", "publisher-link", "open-publisher":
 		if id == 0 {
 			return errors.New("invalid story or comment")
@@ -782,7 +821,15 @@ func run(ctx context.Context, a app, w io.Writer, args []string) error {
 	return nil
 }
 
+// version is set at build time with -ldflags "-X main.version=…".
+var version = "dev"
+
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		// The launcher runs this first, so a firmware that can't run Go reports it on screen.
+		fmt.Println("hnink-data", version)
+		return
+	}
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "Usage: hnink-data CACHE-DIR COMMAND [ARGS]")
 		os.Exit(2)

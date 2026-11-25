@@ -1,4 +1,6 @@
-project('hnink', 'c', version: '1.6.0', default_options: ['c_std=c11', 'warning_level=2'])
+project('hnink', 'c', version: '0.99.0-beta.1', default_options: ['c_std=c11', 'warning_level=2'])
+
+add_project_arguments('-DHNINK_VERSION="' + meson.project_version() + '"', language: 'c')
 
 gtk = dependency('gtk+-2.0', version: '>=2.18')
 executable('hnink-ui', 'src/main.c', dependencies: [gtk, dependency('cairo'), dependency('atk'), dependency('pango')], install: true)
@@ -24,11 +26,15 @@ else
   error('Unsupported build target for Go data service')
 endif
 
+# Pinned: Go 1.24+ needs Linux 3.2, but Kindles run 2.6.31 to 3.0.x (PW1 to Oasis 2).
+# GOTOOLCHAIN downloads this exact release if the installed Go differs.
+go_toolchain = 'go1.23.12'
+
 custom_target('hnink-data',
   input: ['backend/main.go', 'backend/account.go'],
   output: 'hnink-data',
-  command: ['env', 'CGO_ENABLED=0', 'GOOS=' + go_os, 'GOARCH=' + go_arch] + go_extra +
-    [go, 'build', '-trimpath', '-ldflags=-s -w', '-o', '@OUTPUT@', '@INPUT@'],
+  command: ['env', 'CGO_ENABLED=0', 'GOTOOLCHAIN=' + go_toolchain, 'GOOS=' + go_os, 'GOARCH=' + go_arch] + go_extra +
+    [go, 'build', '-trimpath', '-ldflags=-s -w -X main.version=' + meson.project_version(), '-o', '@OUTPUT@', '@INPUT@'],
   build_by_default: true,
   install: true,
   install_dir: get_option('bindir'),

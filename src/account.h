@@ -1,12 +1,9 @@
 static void update_bookmark(App *app) {
-    gboolean saved = app->username ? app->discussion_favorite : app->discussion_saved;
+    gboolean saved = app->discussion_saved;
     GtkWidget *icon = gtk_bin_get_child(GTK_BIN(app->discussion_save));
     g_object_set_data(G_OBJECT(icon), "hn-icon", GINT_TO_POINTER(saved ? ICON_SAVED : ICON_SAVE));
-    const char *name = app->username
-        ? (saved ? "In Hacker News Favorites" : "Add to Hacker News Favorites")
-        : (saved ? "Remove saved" : "Save story");
-    action_name(app->discussion_save, name);
-    gtk_widget_set_sensitive(app->discussion_save, !app->username || !app->account_watch);
+    action_name(app->discussion_save, saved ? "Remove from Saved" : "Save story");
+    gtk_widget_set_sensitive(app->discussion_save, !app->account_watch);
     gtk_widget_queue_draw(icon);
 }
 
@@ -40,10 +37,8 @@ static gboolean read_account_reply(GIOChannel *channel, GIOCondition condition, 
             render(app, 0);
         }
     } else if (line && g_str_has_prefix(line, "favorite\t")) {
-        if (app->story == app->account_story) {
-            app->discussion_favorite = TRUE;
-            if (app->screen == COMMENTS) say(app, "Added to Hacker News Favorites.");
-        }
+        if (app->story == app->account_story && app->screen == COMMENTS)
+            say(app, "Saved and added to Hacker News Favorites.");
     } else {
         char *message = 0;
         if (line && g_str_has_prefix(line, "expired\t")) {
@@ -114,6 +109,16 @@ static void log_in(GtkWidget *widget, App *app) {
 static void log_out(GtkWidget *widget, App *app) {
     (void)widget;
     start_account_request(app, "logout", 0, 0);
+}
+
+/* Runs as an idle after GTK has resized Settings, so the end of the page is really the end. */
+static gboolean settings_to_end(gpointer data) {
+    App *app = data;
+    if (app->screen == OPTIONS && app->content) {
+        GtkAdjustment *scroll = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(app->content));
+        gtk_adjustment_set_value(scroll, gtk_adjustment_get_upper(scroll) - gtk_adjustment_get_page_size(scroll));
+    }
+    return FALSE;
 }
 
 #ifdef __linux__
@@ -189,18 +194,24 @@ static gboolean show_account_keyboard(GtkWidget *entry, void *event, App *app) {
     app->keyboard_entry = entry;
     if (!app->keyboard_keys) build_keyboard(app);
     gtk_widget_show(app->keyboard);
+    g_idle_add(settings_to_end, app);
     return FALSE;
 }
 #endif
 
-static GtkWidget *account_entry(App *app, GtkWidget *row, const char *name, gboolean password) {
+static GtkWidget *account_entry(App *app, const char *name, gboolean password) {
+    GtkWidget *row = gtk_hbox_new(FALSE, 8);
+    GtkWidget *caption = label(name, 0);
+    gtk_widget_set_size_request(caption, app->tap_size * 2, -1);
     GtkWidget *entry = gtk_entry_new();
-    gtk_entry_set_width_chars(GTK_ENTRY(entry), 10);
+    gtk_entry_set_width_chars(GTK_ENTRY(entry), 16);
     gtk_entry_set_max_length(GTK_ENTRY(entry), password ? 512 : 64);
     gtk_entry_set_visibility(GTK_ENTRY(entry), !password);
+    gtk_widget_set_size_request(entry, -1, app->tap_size);
     action_name(entry, name);
-    gtk_box_pack_start(GTK_BOX(row), gtk_label_new(name), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(row), caption, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(row), entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(app->content), row, FALSE, TRUE, 0);
     g_signal_connect(entry, "activate", G_CALLBACK(log_in), app);
 #ifdef __linux__
     g_signal_connect(entry, "button-press-event", G_CALLBACK(show_account_keyboard), app);
@@ -218,8 +229,9 @@ static void render_account(App *app) {
         g_free(identity);
         app->login_button = button("Log out", G_CALLBACK(log_out), app, 0);
     } else {
-        app->username_entry = account_entry(app, row, "Username", FALSE);
-        app->password_entry = account_entry(app, row, "Password", TRUE);
+        message(app, "Optional. Signed in, saved stories are also added to your Hacker News Favorites.");
+        app->username_entry = account_entry(app, "Username", FALSE);
+        app->password_entry = account_entry(app, "Password", TRUE);
         app->login_button = button("Log in", G_CALLBACK(log_in), app, 0);
     }
     gtk_widget_set_sensitive(app->login_button, !app->account_watch);

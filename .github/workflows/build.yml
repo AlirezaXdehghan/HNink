@@ -1,0 +1,28 @@
+# Every push and pull request builds the real Kindle download, so a release tag never finds a broken build.
+name: Build
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.12'
+      - name: Install the ARM toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang binutils-arm-none-eabi zip
+      - name: Build
+        run: |
+          version=$(sed -n "s/^project(.*version: '\([^']*\)'.*/\1/p" meson.build)
+          sh tools/release.sh "$version+${GITHUB_SHA::7}" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hnink-${{ github.sha }}
+          path: |
+            dist/*.zip
+            dist/*.kpkg

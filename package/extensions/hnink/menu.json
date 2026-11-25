@@ -1,0 +1,11 @@
+{
+	"items": [
+		{
+			"name": "HNink",
+			"priority": 1,
+			"action": "/bin/sh",
+			"params": "/mnt/us/hnink/launch.sh",
+			"exitmenu": true
+		}
+	]
+}

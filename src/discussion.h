@@ -59,7 +59,6 @@ static GtkWidget *make_comment_row(App *app, int index, int width) {
     GtkWidget *content = gtk_vbox_new(FALSE, 4);
     if (!item->wire) {
         gtk_box_pack_start(GTK_BOX(content), comment_text(app, app->discussion_text, width), FALSE, TRUE, 3);
-        gtk_box_pack_start(GTK_BOX(content), gtk_hseparator_new(), FALSE, FALSE, 0);
         return content;
     }
 
@@ -72,7 +71,8 @@ static GtkWidget *make_comment_row(App *app, int index, int width) {
     char *fields[6];
     for (int i = 0; i < 6; ++i) fields[i] = decode(parts[i + 1]);
     int depth = item->depth;
-    if (depth <= 1) gtk_box_pack_start(GTK_BOX(content), gtk_hseparator_new(), FALSE, FALSE, 0);
+    /* Rules go between top-level comments. The header already has one above the first row. */
+    if (depth <= 1 && index > 0) gtk_box_pack_start(GTK_BOX(content), gtk_hseparator_new(), FALSE, FALSE, 0);
 
     int gap = app->icon_size / 3;
     int text_width = width;
@@ -88,7 +88,7 @@ static GtkWidget *make_comment_row(App *app, int index, int width) {
         GtkWidget *byline = gtk_hbox_new(FALSE, 3);
         char *author = g_strdup_printf("%s%s%s", *fields[1] ? fields[1] : "Comment",
             *fields[3] ? "  ·  " : "", fields[3]);
-        GtkWidget *heading = label(author, "<span size='small' foreground='#444444'>%s</span>");
+        GtkWidget *heading = label(author, "<span size='small' foreground='#333333'>%s</span>");
         gtk_widget_set_tooltip_text(heading, author);
         g_free(author);
         reader_font(app, heading, text_scales[app->typography.size[COMMENTS]], TRUE);
@@ -333,13 +333,13 @@ static void build_discussion_viewport(App *app, int height) {
     GtkWidget *scroll = gtk_scrolled_window_new(0, 0);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_ALWAYS);
     GtkWidget *scrollbar = gtk_scrolled_window_get_vscrollbar(GTK_SCROLLED_WINDOW(scroll));
-    gtk_widget_set_name(scrollbar, "hnreader-discussion-scrollbar");
+    gtk_widget_set_name(scrollbar, "hnink-discussion-scrollbar");
     int width = app->icon_size / 3;
     gtk_widget_set_size_request(scrollbar, width < 14 ? 14 : width, -1);
     gtk_box_pack_start(GTK_BOX(app->body), scroll, TRUE, TRUE, 0);
     app->content = scroll;
     app->comment_layout = gtk_layout_new(0, 0);
-    gtk_widget_set_name(app->comment_layout, "hnreader-paper");
+    gtk_widget_set_name(app->comment_layout, "hnink-paper");
     gtk_container_add(GTK_CONTAINER(scroll), app->comment_layout);
     gtk_layout_set_size(GTK_LAYOUT(app->comment_layout), 1, height);
     app->comment_scroll = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll));

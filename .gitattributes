@@ -1,0 +1,5 @@
+# The Kindle's sh can't run scripts with CRLF line endings.
+*.sh text eol=lf
+*.json text eol=lf
+*.xml text eol=lf
+*.yml text eol=lf
