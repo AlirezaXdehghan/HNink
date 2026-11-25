@@ -1,0 +1,6 @@
+Mozilla CA root certificate bundle
+Upstream https://curl.se/docs/caextract.html
+The unmodified certificate bundle was taken from Homebrew ca-certificates.
+Mozilla certificate data is available under Mozilla Public License 2.0.
+License text https://www.mozilla.org/MPL/2.0/
+The bundle is used by the Go data service to validate TLS certificates.

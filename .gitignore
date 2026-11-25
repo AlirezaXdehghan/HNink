@@ -1,0 +1,6 @@
+.DS_Store
+__pycache__/
+/build*/
+/package/hnink/data/
+/package/hnink/hnink-data
+/package/hnink/hnink-ui-arm*
